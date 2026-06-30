@@ -56,7 +56,8 @@ app.post("/api/ai", async (req, res) => {
 });
 
 const onlyDigits = (s) => (s || "").replace(/[^0-9]/g, "");
-const isMobile = (phone) => /^0[789]0/.test(onlyDigits(phone));   // 070/080/090 = 携帯
+// 携帯=070/080/090。ただしフリーダイヤル(0800/0120/0570/0990)は除外
+const isMobile = (phone) => { const d = onlyDigits(phone); return /^0[789]0/.test(d) && !/^(0800|0120|0570|0990)/.test(d); };
 
 // エリア×ペルソナから検索クエリを生成
 function buildQueries(area, keyword) {
