@@ -1,0 +1,24 @@
+# Render Blueprint — Rumina 代理店開拓OS 本番サーバー
+# Render で「New > Blueprint」→ このリポジトリを指定でそのままデプロイできます。
+services:
+  - type: web
+    name: rumina-agency-os
+    runtime: docker
+    plan: starter            # 小規模(1〜5名)。必要に応じて変更
+    autoDeploy: true
+    healthCheckPath: /health
+    disk:                    # SQLite を永続化(再デプロイでデータが消えないように)
+      name: rumina-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: DB_FILE
+        value: /data/rumina.db
+      - key: JWT_SECRET
+        generateValue: true   # 自動生成(ログイン署名鍵)
+      - key: ANTHROPIC_API_KEY
+        sync: false           # ダッシュボードで入力(秘匿)
+      - key: GOOGLE_MAPS_API_KEY
+        sync: false           # 〃 (Places(New)有効化したキー)
+      - key: SLACK_WEBHOOK
+        sync: false           # 〃 (任意。日報/アラート投稿用)

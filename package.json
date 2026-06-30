@@ -1,0 +1,17 @@
+{
+  "name": "agency-crawler",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Rumina 代理店開拓 — Google Places クローラ(バックエンド)",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^12.11.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.3"
+  }
+}
