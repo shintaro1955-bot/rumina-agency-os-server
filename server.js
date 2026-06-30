@@ -6,7 +6,15 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { Companies, Events, Nippo, ReportState, KV, Accounts } from "./db.js";
 import { register, login, changePassword, authRequired, pub } from "./auth.js";
+import { resolveKeys } from "./keys.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// APIキー自動解決: 自分の.env → 兄弟プロジェクト(../*/.env)を自動スキャン
+const KEY_SCAN_ROOT = process.env.KEY_SCAN_ROOT || path.join(__dirname, "..");
+const RESOLVED = resolveKeys({ rootDir: KEY_SCAN_ROOT, scan: process.env.KEY_AUTOSCAN !== "0" });
+for (const [k, src] of Object.entries(RESOLVED.sources)) {
+  if (src !== "env") console.log(`[keys] ${k} を ${src} から自動取得`);
+}
 
 /* ============================================================
    Rumina 代理店開拓 — Google クローラ(バックエンド)
@@ -16,10 +24,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
    ※Google Cloud で「Places API (New)」を有効化しておくこと
    ============================================================ */
 
-const KEY = process.env.GOOGLE_MAPS_API_KEY || process.env.GOOGLE_API_KEY;
-const CSE_KEY = process.env.GOOGLE_CSE_KEY || KEY;       // Custom Search 用(任意)
-const CSE_ID = process.env.GOOGLE_CSE_ID || "";          // Programmable Search Engine ID(任意)
-const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;     // AI(リサーチ/発掘/日報)用
+const KEY = RESOLVED.keys.googleMaps;                    // Places(発掘)・地図
+const CSE_KEY = RESOLVED.keys.cseKey || KEY;             // Custom Search 用(任意)
+const CSE_ID = RESOLVED.keys.cseId || "";                // Programmable Search Engine ID(任意)
+const ANTHROPIC_KEY = RESOLVED.keys.anthropic;           // AI(リサーチ/発掘/日報)用
 const PORT = process.env.PORT || 8787;
 
 const app = express();
@@ -98,7 +106,7 @@ async function customSearchSite(name) {
 }
 
 /* ---------- Slack 通知 ---------- */
-const SLACK_WEBHOOK = process.env.SLACK_WEBHOOK || "";
+const SLACK_WEBHOOK = RESOLVED.keys.slack || "";
 async function postSlack(text) {
   if (!SLACK_WEBHOOK) return false;
   try { await fetch(SLACK_WEBHOOK, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) }); return true; } catch (e) { return false; }
@@ -153,7 +161,7 @@ app.post("/api/nippo", authRequired, async (req, res) => {
 });
 app.get("/api/nippo", authRequired, (req, res) => res.json({ entries: Nippo.list({ owner: req.query.owner, date: req.query.date }) }));
 
-app.get("/health", (_req, res) => res.json({ ok: true, placesKey: !!KEY, customSearch: !!CSE_ID, ai: !!ANTHROPIC_KEY, db: true, slack: !!SLACK_WEBHOOK, accounts: Accounts.count() }));
+app.get("/health", (_req, res) => res.json({ ok: true, placesKey: !!KEY, customSearch: !!CSE_ID, ai: !!ANTHROPIC_KEY, db: true, slack: !!SLACK_WEBHOOK, accounts: Accounts.count(), keySources: RESOLVED.sources }));
 
 app.post("/api/discover", async (req, res) => {
   try {
