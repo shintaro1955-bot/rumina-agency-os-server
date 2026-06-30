@@ -59,18 +59,57 @@ const onlyDigits = (s) => (s || "").replace(/[^0-9]/g, "");
 // 携帯=070/080/090。ただしフリーダイヤル(0800/0120/0570/0990)は除外
 const isMobile = (phone) => { const d = onlyDigits(phone); return /^0[789]0/.test(d) && !/^(0800|0120|0570|0990)/.test(d); };
 
-// エリア×ペルソナから検索クエリを生成
+// エリア×ペルソナから検索クエリを生成(営業会社/販売代理店を狙う)
 function buildQueries(area, keyword) {
   const a = area && area !== "全国" ? area : "";
-  const q = [
-    `${a} 訪問販売 会社`,
-    `${a} 通信回線 代理店`,
+  const base = [
+    `${a} 光回線 訪問販売 会社`,
+    `${a} 通信回線 販売代理店`,
+    `${a} 訪問販売 営業代行 会社`,
     `${a} 催事 イベント販売 会社`,
-    `${a} 美容 健康食品 訪問販売`,
-    `${a} 太陽光 訪問販売 会社`,
+    `${a} 美容 健康食品 訪問販売 会社`,
   ];
-  if (keyword) q.unshift(`${a} ${keyword} 会社`);
+  const q = keyword
+    ? [`${a} ${keyword} 訪問販売 会社`, `${a} ${keyword} 販売代理店`, `${a} ${keyword} 営業会社`, ...base]
+    : base;
   return q.map((s) => s.trim()).filter(Boolean);
+}
+
+// 代理店候補にならない先(官公庁/協会/組合/大手キャリア本社/インフラ/教育医療/小売チェーン本体)を除外
+const EXCLUDE_NAME = /(総務省|通信局|市役所|区役所|町役場|村役場|県庁|都庁|府庁|道庁|役所|官公庁|商工会議所|商工会|協同組合|協会|公社|財団法人|一般社団|公益社団|独立行政法人|振興会|大学|高校|中学校|小学校|学校法人|病院|クリニック|郵便局|警察|消防|裁判所|図書館|ＮＴＴ東日本|ＮＴＴ西日本|NTT東日本|NTT西日本|日本電信電話|ＮＴＴドコモ|NTTドコモ|ＫＤＤＩ|KDDI|ソフトバンク株式会社|楽天モバイル株式会社|東京電力|関西電力|中部電力|東邦ガス|大阪ガス|東京ガス)/;
+const EXCLUDE_TYPE = new Set(["local_government_office", "city_hall", "government_office", "post_office", "police", "fire_station", "courthouse", "embassy", "school", "primary_school", "secondary_school", "university", "hospital", "library"]);
+function isExcluded(name, types) {
+  if (EXCLUDE_NAME.test(name || "")) return true;
+  if (Array.isArray(types) && types.some((t) => EXCLUDE_TYPE.has(t))) return true;
+  return false;
+}
+
+// AIで二次選別: 営業会社/販売代理店だけ残す(キーがある時のみ)
+async function aiRefine(list, { area, keyword }) {
+  if (!ANTHROPIC_KEY || !list.length) return list;
+  try {
+    const sys = "あなたは代理店開拓の選定担当です。与えた企業リストから『ライト商材(通信回線/光/携帯/浄水器/美容/健康食品/日用品/省エネ等)の訪問販売・催事・営業代行を行う“営業会社/販売代理店”で、当社の代理店候補になり得る先』だけを選びます。官公庁・自治体・協会・組合・大手キャリア本社・インフラ/メーカー本体・単独の小売店舗・士業・医療教育は keep=false。出力はJSON配列のみ(前置き/説明/マークダウン不要)。各要素: {name(入力のnameをそのまま), keep(true|false), channel('訪販'|'催事'|'両方'|'不明'), reason(20字以内)}。";
+    const usr = `エリア:${area} 条件:${keyword || "なし"}\n企業:\n` + list.map((c, i) => `${i + 1}. ${c.name} | types:${(c.types || []).slice(0, 4).join(",")} | ${c.address || ""} | ${c.url || ""}`).join("\n");
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 1500, system: sys, messages: [{ role: "user", content: usr }] }),
+    });
+    const d = await r.json();
+    const text = (d.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+    const m = text.replace(/```json|```/g, "").match(/\[[\s\S]*\]/);
+    const arr = JSON.parse(m ? m[0] : text);
+    const norm = (s) => String(s || "").replace(/\s|株式会社|（株）|\(株\)/g, "");
+    const verdict = new Map(arr.map((v) => [norm(v.name), v]));
+    const kept = [];
+    for (const c of list) {
+      const v = verdict.get(norm(c.name));
+      if (v && v.keep === false) continue;
+      if (v) { c.channel = v.channel || "不明"; c.reason = v.reason || ""; }
+      kept.push(c);
+    }
+    return kept.length ? kept : list; // 全部落ちたら安全側で元を返す
+  } catch (e) { return list; }
 }
 
 const FIELD_MASK = [
@@ -167,11 +206,12 @@ app.get("/health", (_req, res) => res.json({ ok: true, placesKey: !!KEY, customS
 app.post("/api/discover", async (req, res) => {
   try {
     if (!KEY) return res.status(500).json({ error: "GOOGLE_MAPS_API_KEY が未設定です。Places API (New) を有効化したキーを設定してください。" });
-    const { area = "全国", count = 8, keyword = "" } = req.body || {};
+    const { area = "全国", count = 8, keyword = "", aiFilter = true } = req.body || {};
     const want = Math.max(1, Math.min(30, Number(count) || 8));
 
     const seen = new Set();
-    const out = [];
+    let out = [];
+    let excluded = 0;
     for (const q of buildQueries(area, keyword)) {
       const places = await placesTextSearch(q, 20);
       for (const p of places) {
@@ -179,13 +219,11 @@ app.post("/api/discover", async (req, res) => {
         if (seen.has(id)) continue;
         seen.add(id);
         if (p.businessStatus && p.businessStatus !== "OPERATIONAL") continue;
+        const name = p.displayName?.text || "";
+        if (isExcluded(name, p.types)) { excluded++; continue; }   // ① 官公庁/大手等を除外
         const phone = p.nationalPhoneNumber || p.internationalPhoneNumber || "";
-        let url = p.websiteUri || "";
-        if (!url) url = await customSearchSite(p.displayName?.text || "");
         out.push({
-          name: p.displayName?.text || "",
-          url,
-          area,
+          name, url: p.websiteUri || "", area,
           address: p.formattedAddress || "",
           phone,
           mobileOnly: !!phone && isMobile(phone),
@@ -193,12 +231,19 @@ app.post("/api/discover", async (req, res) => {
           maps: p.googleMapsUri || "",
         });
       }
-      if (out.length >= want * 2) break;
+      if (out.length >= want * 3) break;   // AI選別の余地を持って多めに収集
     }
+
+    // ③ AIで二次選別(営業会社/販売代理店だけ残す)
+    const before = out.length;
+    if (aiFilter) out = await aiRefine(out, { area, keyword });
+
+    // サイト未取得は Custom Search で補完(任意・残った分だけ)
+    if (CSE_ID) for (const c of out.slice(0, want)) { if (!c.url) c.url = await customSearchSite(c.name); }
 
     // 携帯のみ/連絡先ありを優先(新設ベンチャーが上に来やすい)
     out.sort((a, b) => (Number(b.mobileOnly) - Number(a.mobileOnly)) || ((b.phone ? 1 : 0) - (a.phone ? 1 : 0)));
-    res.json({ companies: out.slice(0, want), scanned: seen.size });
+    res.json({ companies: out.slice(0, want), scanned: seen.size, excluded, aiFiltered: aiFilter ? (before - out.length) : 0 });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
