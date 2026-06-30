@@ -59,24 +59,44 @@ const onlyDigits = (s) => (s || "").replace(/[^0-9]/g, "");
 // 携帯=070/080/090。ただしフリーダイヤル(0800/0120/0570/0990)は除外
 const isMobile = (phone) => { const d = onlyDigits(phone); return /^0[789]0/.test(d) && !/^(0800|0120|0570|0990)/.test(d); };
 
+// 業種(ライト商材)別の検索フレーズ
+const VERTICALS = [
+  { id: "通信", match: /(通信|光|回線|携帯|wi-?fi|インターネット|ネット回線)/i, q: ["光回線 訪問販売 会社", "通信回線 販売代理店", "携帯 通信 営業代行 会社"] },
+  { id: "浄水", match: /(浄水|ウォーター|水)/, q: ["浄水器 訪問販売 会社", "ウォーターサーバー 販売代理店"] },
+  { id: "美容", match: /(美容|化粧|エステ|コスメ)/, q: ["美容 化粧品 訪問販売 会社", "エステ 美容商材 販売代理店"] },
+  { id: "健康", match: /(健康|サプリ|健康食品|青汁|酵素)/, q: ["健康食品 訪問販売 会社", "サプリメント 販売代理店"] },
+  { id: "太陽光", match: /(太陽光|蓄電|省エネ|オール電化|エコ|蓄電池|電気代)/, q: ["太陽光 蓄電池 訪問販売 会社", "オール電化 省エネ 販売代理店"] },
+  { id: "リフォーム", match: /(リフォーム|住宅設備|外壁|塗装|屋根|防水)/, q: ["リフォーム 訪問販売 会社", "外壁塗装 住宅設備 販売会社"] },
+  { id: "保険金融", match: /(保険|金融|共済)/, q: ["保険 訪問営業 代理店", "金融商材 営業会社"] },
+  { id: "教材", match: /(教材|学習|教育|塾)/, q: ["教材 訪問販売 会社", "学習教材 販売代理店"] },
+  { id: "催事", match: /(催事|イベント|催し|物販)/, q: ["催事 イベント販売 会社", "催事 物販 運営会社"] },
+  { id: "日用品", match: /(日用品|サブスク|定期購入)/, q: ["日用品 訪問販売 会社", "サブスク 販売代理店"] },
+];
 // エリア×ペルソナから検索クエリを生成(営業会社/販売代理店を狙う)
 function buildQueries(area, keyword) {
   const a = area && area !== "全国" ? area : "";
-  const base = [
-    `${a} 光回線 訪問販売 会社`,
-    `${a} 通信回線 販売代理店`,
-    `${a} 訪問販売 営業代行 会社`,
-    `${a} 催事 イベント販売 会社`,
-    `${a} 美容 健康食品 訪問販売 会社`,
+  const pre = (s) => `${a} ${s}`.trim();
+  if (keyword) {
+    const v = VERTICALS.find((x) => x.match.test(keyword));
+    const qs = v
+      ? [...v.q, `${keyword} 訪問販売 会社`]
+      : [`${keyword} 訪問販売 会社`, `${keyword} 販売代理店`, `${keyword} 営業会社`];
+    return qs.map(pre).filter(Boolean);
+  }
+  // キーワード無し: 主要業種を横断する広めミックス
+  const broad = [
+    "光回線 訪問販売 会社",
+    "訪問販売 営業代行 会社",
+    "催事 イベント販売 会社",
+    "美容 健康食品 訪問販売 会社",
+    "太陽光 蓄電池 訪問販売 会社",
+    "リフォーム 住宅設備 訪問販売 会社",
   ];
-  const q = keyword
-    ? [`${a} ${keyword} 訪問販売 会社`, `${a} ${keyword} 販売代理店`, `${a} ${keyword} 営業会社`, ...base]
-    : base;
-  return q.map((s) => s.trim()).filter(Boolean);
+  return broad.map(pre).filter(Boolean);
 }
 
 // 代理店候補にならない先(官公庁/協会/組合/大手キャリア本社/インフラ/教育医療/小売チェーン本体)を除外
-const EXCLUDE_NAME = /(総務省|通信局|市役所|区役所|町役場|村役場|県庁|都庁|府庁|道庁|役所|官公庁|商工会議所|商工会|協同組合|協会|公社|財団法人|一般社団|公益社団|独立行政法人|振興会|大学|高校|中学校|小学校|学校法人|病院|クリニック|郵便局|警察|消防|裁判所|図書館|ＮＴＴ東日本|ＮＴＴ西日本|NTT東日本|NTT西日本|日本電信電話|ＮＴＴドコモ|NTTドコモ|ＫＤＤＩ|KDDI|ソフトバンク株式会社|楽天モバイル株式会社|東京電力|関西電力|中部電力|東邦ガス|大阪ガス|東京ガス)/;
+const EXCLUDE_NAME = /(総務省|通信局|市役所|区役所|町役場|村役場|県庁|都庁|府庁|道庁|役所|官公庁|商工会議所|商工会|協同組合|協会|公社|財団法人|一般社団|公益社団|独立行政法人|振興会|大学|高校|中学校|小学校|学校法人|病院|クリニック|医院|歯科|薬局|郵便局|警察|消防|裁判所|図書館|博物館|神社|寺|教会|ＮＴＴ東日本|ＮＴＴ西日本|NTT東日本|NTT西日本|日本電信電話|ＮＴＴドコモ|NTTドコモ|ＫＤＤＩ|KDDI|ソフトバンク株式会社|楽天モバイル株式会社|東京電力|関西電力|中部電力|九州電力|東北電力|中国電力|四国電力|北海道電力|北陸電力|東邦ガス|大阪ガス|東京ガス|西部ガス|銀行|信用金庫|信用組合|労働金庫|信用保証|証券|農業協同組合|ＪＡ|ＪＲ|ヤマダ電機|ヤマダデンキ|ビックカメラ|ヨドバシ|ケーズデンキ|エディオン|コジマ|ノジマ|ジョーシン|ドン・キホーテ|イオン|イトーヨーカ堂|セブン-イレブン|ローソン|ファミリーマート|ニトリ|ユニクロ|無印良品|コストコ|工場|製作所|製造所|発電所|変電所|浄水場|ホテル|旅館|ガソリンスタンド)/;
 const EXCLUDE_TYPE = new Set(["local_government_office", "city_hall", "government_office", "post_office", "police", "fire_station", "courthouse", "embassy", "school", "primary_school", "secondary_school", "university", "hospital", "library"]);
 function isExcluded(name, types) {
   if (EXCLUDE_NAME.test(name || "")) return true;
@@ -88,7 +108,7 @@ function isExcluded(name, types) {
 async function aiRefine(list, { area, keyword }) {
   if (!ANTHROPIC_KEY || !list.length) return list;
   try {
-    const sys = "あなたは代理店開拓の選定担当です。与えた企業リストから『ライト商材(通信回線/光/携帯/浄水器/美容/健康食品/日用品/省エネ等)の訪問販売・催事・営業代行を行う“営業会社/販売代理店”で、当社の代理店候補になり得る先』だけを選びます。官公庁・自治体・協会・組合・大手キャリア本社・インフラ/メーカー本体・単独の小売店舗・士業・医療教育は keep=false。出力はJSON配列のみ(前置き/説明/マークダウン不要)。各要素: {name(入力のnameをそのまま), keep(true|false), channel('訪販'|'催事'|'両方'|'不明'), reason(20字以内)}。";
+    const sys = "あなたは代理店開拓の選定担当です。与えた企業リストから『ライト商材(通信回線/光/携帯/Wi-Fi/浄水器/ウォーターサーバー/美容/化粧品/エステ/健康食品/サプリ/太陽光/蓄電池/省エネ/オール電化/リフォーム/住宅設備/保険/金融/教材/日用品/サブスク等)の訪問販売・催事・営業代行・販売代理を行う“営業会社/販売代理店/訪販部隊を持つ会社”で、当社の代理店候補になり得る先』だけを選びます。keep=false にするもの: 官公庁・自治体・協会・組合・大手キャリアやインフラ/メーカー/小売チェーンの本体・単独の実店舗(小売/飲食/サロン店舗)・士業・医療・教育機関・金融機関本体。出力はJSON配列のみ(前置き/説明/マークダウン不要)。各要素: {name(入力のnameをそのまま), keep(true|false), channel('訪販'|'催事'|'両方'|'不明'), fit('高'|'中'|'低'), reason(20字以内)}。";
     const usr = `エリア:${area} 条件:${keyword || "なし"}\n企業:\n` + list.map((c, i) => `${i + 1}. ${c.name} | types:${(c.types || []).slice(0, 4).join(",")} | ${c.address || ""} | ${c.url || ""}`).join("\n");
     const r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -105,7 +125,7 @@ async function aiRefine(list, { area, keyword }) {
     for (const c of list) {
       const v = verdict.get(norm(c.name));
       if (v && v.keep === false) continue;
-      if (v) { c.channel = v.channel || "不明"; c.reason = v.reason || ""; }
+      if (v) { c.channel = v.channel || "不明"; c.reason = v.reason || ""; c.fit = v.fit || ""; }
       kept.push(c);
     }
     return kept.length ? kept : list; // 全部落ちたら安全側で元を返す
@@ -241,8 +261,9 @@ app.post("/api/discover", async (req, res) => {
     // サイト未取得は Custom Search で補完(任意・残った分だけ)
     if (CSE_ID) for (const c of out.slice(0, want)) { if (!c.url) c.url = await customSearchSite(c.name); }
 
-    // 携帯のみ/連絡先ありを優先(新設ベンチャーが上に来やすい)
-    out.sort((a, b) => (Number(b.mobileOnly) - Number(a.mobileOnly)) || ((b.phone ? 1 : 0) - (a.phone ? 1 : 0)));
+    // 適合度(高>中>低) → 携帯のみ → 連絡先あり の順で優先
+    const fitRank = (f) => ({ "高": 3, "中": 2, "低": 1 }[f] || 0);
+    out.sort((a, b) => (fitRank(b.fit) - fitRank(a.fit)) || (Number(b.mobileOnly) - Number(a.mobileOnly)) || ((b.phone ? 1 : 0) - (a.phone ? 1 : 0)));
     res.json({ companies: out.slice(0, want), scanned: seen.size, excluded, aiFiltered: aiFilter ? (before - out.length) : 0 });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
