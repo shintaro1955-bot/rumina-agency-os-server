@@ -223,10 +223,52 @@ app.get("/api/nippo", authRequired, (req, res) => res.json({ entries: Nippo.list
 
 app.get("/health", (_req, res) => res.json({ ok: true, placesKey: !!KEY, customSearch: !!CSE_ID, ai: !!ANTHROPIC_KEY, db: true, slack: !!SLACK_WEBHOOK, accounts: Accounts.count(), keySources: RESOLVED.sources }));
 
+// 新興企業モード: AI Web検索で「設立直後・若手経営者・携帯のみ」のベンチャーを探す
+async function aiDiscover({ area, count, keyword }) {
+  if (!ANTHROPIC_KEY) throw new Error("ANTHROPIC_API_KEY が未設定です");
+  const sys =
+    "あなたは代理店開拓のリサーチャーです。指定エリアで『設立から概ね5年以内の新しい会社・ベンチャーで、ライト商材(通信回線/光/携帯/浄水器/美容/化粧品/健康食品/太陽光/蓄電池/リフォーム/日用品/サブスク等)の訪問販売・催事・営業代行・販売代理を行う、または行える営業会社/販売代理店』を探してください。" +
+    "特に20〜30代の若手経営者が率い、成長志向の会社を最優先。連絡先が携帯番号(070/080/090)のような小規模・新設も歓迎。" +
+    "必ずweb検索(ニュース/PR/採用情報/会社サイト/登記情報など)を使い、実在し公開情報で確認できる会社のみ。憶測で社名を作らないこと。" +
+    "出力はJSON配列のみ(前置き/説明/マークダウン不要)。各要素: name(正式社名), url(公式サイト。不明は空), area(所在), products(主要商材を短く), " +
+    "channel('訪販'|'催事'|'両方'|'なし'|'不明'), ownerAge('20代'|'30代'|'40代以上'|'不明'), founded(設立年。不明は空), phone(代表電話。不明は空), " +
+    "fit('高'|'中'|'低'), reason(代理店候補として有望な理由を20字以内)。確証の無い項目は空か'不明'。";
+  const usr = `エリア: ${area}\n希望件数: ${count}社${keyword ? `\n業種/条件: ${keyword}` : ""}`;
+  const r = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-beta": "web-search-2025-03-05" },
+    body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 4096, system: sys, messages: [{ role: "user", content: usr }], tools: [{ type: "web_search_20250305", name: "web_search" }] }),
+  });
+  const d = await r.json();
+  const text = (d.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+  const m = text.replace(/```json|```/g, "").match(/\[[\s\S]*\]/);
+  const arr = JSON.parse(m ? m[0] : text);
+  return (Array.isArray(arr) ? arr : []).map((it) => {
+    const phone = it.phone || "";
+    const note = [it.founded ? `設立${it.founded}` : "", it.ownerAge && it.ownerAge !== "不明" ? `経営者${it.ownerAge}` : "", it.reason || ""].filter(Boolean).join(" / ");
+    return {
+      name: String(it.name || "").trim(), url: it.url || "", area: it.area || area,
+      products: it.products || "", address: "", phone, mobileOnly: !!phone && isMobile(phone),
+      channel: it.channel || "不明", fit: it.fit || "", reason: note, types: [], maps: "",
+    };
+  }).filter((c) => c.name);
+}
+
 app.post("/api/discover", async (req, res) => {
   try {
+    const { area = "全国", count = 8, keyword = "", aiFilter = true, mode = "places" } = req.body || {};
+
+    // 新興企業モード(AI Web検索)
+    if (mode === "ai" || mode === "emerging") {
+      if (!ANTHROPIC_KEY) return res.status(500).json({ error: "AI(ANTHROPIC_API_KEY)が未設定です。" });
+      const want = Math.max(1, Math.min(20, Number(count) || 8));
+      const companies = await aiDiscover({ area, count: want, keyword });
+      const fitRank = (f) => ({ "高": 3, "中": 2, "低": 1 }[f] || 0);
+      companies.sort((a, b) => (fitRank(b.fit) - fitRank(a.fit)) || (Number(b.mobileOnly) - Number(a.mobileOnly)));
+      return res.json({ companies: companies.slice(0, want), scanned: companies.length, mode: "ai" });
+    }
+
     if (!KEY) return res.status(500).json({ error: "GOOGLE_MAPS_API_KEY が未設定です。Places API (New) を有効化したキーを設定してください。" });
-    const { area = "全国", count = 8, keyword = "", aiFilter = true } = req.body || {};
     const want = Math.max(1, Math.min(30, Number(count) || 8));
 
     const seen = new Set();
