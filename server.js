@@ -83,14 +83,21 @@ function buildQueries(area, keyword) {
       : [`${keyword} 訪問販売 会社`, `${keyword} 販売代理店`, `${keyword} 営業会社`];
     return qs.map(pre).filter(Boolean);
   }
-  // キーワード無し: 主要業種を横断する広めミックス
+  // キーワード無し: 全業種を横断する広めミックス(母数を稼ぐため多め)
   const broad = [
+    "訪問販売 会社",
+    "営業代行 会社",
+    "販売代理店 募集 会社",
     "光回線 訪問販売 会社",
-    "訪問販売 営業代行 会社",
+    "通信 携帯 営業代行 会社",
     "催事 イベント販売 会社",
-    "美容 健康食品 訪問販売 会社",
+    "美容 化粧品 訪問販売 会社",
+    "健康食品 サプリ 販売代理店",
     "太陽光 蓄電池 訪問販売 会社",
     "リフォーム 住宅設備 訪問販売 会社",
+    "浄水器 ウォーターサーバー 販売会社",
+    "保険 金融商材 営業会社",
+    "教材 学習 訪問販売 会社",
   ];
   return broad.map(pre).filter(Boolean);
 }
@@ -104,23 +111,38 @@ function isExcluded(name, types) {
   return false;
 }
 
-// AIで二次選別: 営業会社/販売代理店だけ残す(キーがある時のみ)
+// AIで二次選別(1バッチ分): 判定Mapを返す
+async function aiRefineBatch(list, { area, keyword }) {
+  const verdict = new Map();
+  if (!ANTHROPIC_KEY || !list.length) return verdict;
+  const sys = "あなたは代理店開拓の選定担当です。与えた企業リストから『ライト商材(通信回線/光/携帯/Wi-Fi/浄水器/ウォーターサーバー/美容/化粧品/エステ/健康食品/サプリ/太陽光/蓄電池/省エネ/オール電化/リフォーム/住宅設備/保険/金融/教材/日用品/サブスク等)の訪問販売・催事・営業代行・販売代理を行う“営業会社/販売代理店/訪販部隊を持つ会社”で、当社の代理店候補になり得る先』だけを選びます。keep=false にするもの: 官公庁・自治体・協会・組合・大手キャリアやインフラ/メーカー/小売チェーンの本体・単独の実店舗(小売/飲食/サロン店舗)・士業・医療・教育機関・金融機関本体。出力はJSON配列のみ(前置き/説明/マークダウン不要)。各要素: {name(入力のnameをそのまま), keep(true|false), channel('訪販'|'催事'|'両方'|'不明'), fit('高'|'中'|'低'), reason(20字以内)}。";
+  const usr = `エリア:${area} 条件:${keyword || "なし"}\n企業:\n` + list.map((c, i) => `${i + 1}. ${c.name} | types:${(c.types || []).slice(0, 4).join(",")} | ${c.address || ""} | ${c.url || ""}`).join("\n");
+  const r = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01" },
+    body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 4000, system: sys, messages: [{ role: "user", content: usr }] }),
+  });
+  const d = await r.json();
+  const text = (d.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+  const m = text.replace(/```json|```/g, "").match(/\[[\s\S]*\]/);
+  const arr = JSON.parse(m ? m[0] : text);
+  const norm = (s) => String(s || "").replace(/\s|株式会社|（株）|\(株\)/g, "");
+  for (const v of arr) verdict.set(norm(v.name), v);
+  return verdict;
+}
+
+// 100社規模でも判定できるよう ~30社ずつのバッチに割って並列選別
 async function aiRefine(list, { area, keyword }) {
   if (!ANTHROPIC_KEY || !list.length) return list;
   try {
-    const sys = "あなたは代理店開拓の選定担当です。与えた企業リストから『ライト商材(通信回線/光/携帯/Wi-Fi/浄水器/ウォーターサーバー/美容/化粧品/エステ/健康食品/サプリ/太陽光/蓄電池/省エネ/オール電化/リフォーム/住宅設備/保険/金融/教材/日用品/サブスク等)の訪問販売・催事・営業代行・販売代理を行う“営業会社/販売代理店/訪販部隊を持つ会社”で、当社の代理店候補になり得る先』だけを選びます。keep=false にするもの: 官公庁・自治体・協会・組合・大手キャリアやインフラ/メーカー/小売チェーンの本体・単独の実店舗(小売/飲食/サロン店舗)・士業・医療・教育機関・金融機関本体。出力はJSON配列のみ(前置き/説明/マークダウン不要)。各要素: {name(入力のnameをそのまま), keep(true|false), channel('訪販'|'催事'|'両方'|'不明'), fit('高'|'中'|'低'), reason(20字以内)}。";
-    const usr = `エリア:${area} 条件:${keyword || "なし"}\n企業:\n` + list.map((c, i) => `${i + 1}. ${c.name} | types:${(c.types || []).slice(0, 4).join(",")} | ${c.address || ""} | ${c.url || ""}`).join("\n");
-    const r = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 1500, system: sys, messages: [{ role: "user", content: usr }] }),
-    });
-    const d = await r.json();
-    const text = (d.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
-    const m = text.replace(/```json|```/g, "").match(/\[[\s\S]*\]/);
-    const arr = JSON.parse(m ? m[0] : text);
+    const CHUNK = 30;
+    const chunks = [];
+    for (let i = 0; i < list.length; i += CHUNK) chunks.push(list.slice(i, i + CHUNK));
+    const maps = await Promise.all(chunks.map((c) => aiRefineBatch(c, { area, keyword }).catch(() => new Map())));
     const norm = (s) => String(s || "").replace(/\s|株式会社|（株）|\(株\)/g, "");
-    const verdict = new Map(arr.map((v) => [norm(v.name), v]));
+    const verdict = new Map();
+    for (const mp of maps) for (const [k, v] of mp) verdict.set(k, v);
+    if (!verdict.size) return list; // AIが一切返さなければ安全側で元を返す
     const kept = [];
     for (const c of list) {
       const v = verdict.get(norm(c.name));
@@ -128,7 +150,7 @@ async function aiRefine(list, { area, keyword }) {
       if (v) { c.channel = v.channel || "不明"; c.reason = v.reason || ""; c.fit = v.fit || ""; }
       kept.push(c);
     }
-    return kept.length ? kept : list; // 全部落ちたら安全側で元を返す
+    return kept.length ? kept : list;
   } catch (e) { return list; }
 }
 
@@ -138,20 +160,34 @@ const FIELD_MASK = [
   "places.websiteUri", "places.businessStatus", "places.types", "places.googleMapsUri",
 ].join(",");
 
-// Places API (New) Text Search
-async function placesTextSearch(query, pageSize = 20) {
+// Places API (New) Text Search(1ページ)。nextPageTokenも返す
+async function placesTextSearch(query, pageToken = "") {
+  const body = { textQuery: query, languageCode: "ja", regionCode: "JP", pageSize: 20 };
+  if (pageToken) body.pageToken = pageToken;
   const r = await fetch("https://places.googleapis.com/v1/places:searchText", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "X-Goog-Api-Key": KEY,
-      "X-Goog-FieldMask": FIELD_MASK,
+      "X-Goog-FieldMask": FIELD_MASK + ",nextPageToken",
     },
-    body: JSON.stringify({ textQuery: query, languageCode: "ja", regionCode: "JP", pageSize: Math.min(20, pageSize) }),
+    body: JSON.stringify(body),
   });
   const d = await r.json();
   if (d.error) throw new Error(`Places(New): ${d.error.status || d.error.code} - ${d.error.message || ""}`.trim());
-  return d.places || [];
+  return { places: d.places || [], nextPageToken: d.nextPageToken || "" };
+}
+
+// 1クエリを最大 maxPages ページ分たぐる(Places(New)は最大3ページ/60件)
+async function placesTextSearchPaged(query, maxPages = 3) {
+  let token = "", all = [];
+  for (let p = 0; p < maxPages; p++) {
+    const { places, nextPageToken } = await placesTextSearch(query, token);
+    all = all.concat(places);
+    if (!nextPageToken) break;
+    token = nextPageToken;
+  }
+  return all;
 }
 
 // 任意: Custom Search で公式サイト/新設ベンチャーを補完
@@ -269,13 +305,16 @@ app.post("/api/discover", async (req, res) => {
     }
 
     if (!KEY) return res.status(500).json({ error: "GOOGLE_MAPS_API_KEY が未設定です。Places API (New) を有効化したキーを設定してください。" });
-    const want = Math.max(1, Math.min(30, Number(count) || 8));
+    const want = Math.max(1, Math.min(100, Number(count) || 8));
+    // 大量取得(50社超)は3ページ×多クエリで深掘り。少数なら1ページで速く
+    const pagesPerQuery = want > 50 ? 3 : want > 20 ? 2 : 1;
+    const collectTarget = want > 50 ? want * 5 : want * 2; // AI選別で7割方落ちる前提。大量要求時は母数を厚く
 
     const seen = new Set();
     let out = [];
     let excluded = 0;
     for (const q of buildQueries(area, keyword)) {
-      const places = await placesTextSearch(q, 20);
+      const places = await placesTextSearchPaged(q, pagesPerQuery);
       for (const p of places) {
         const id = p.id || (p.displayName?.text || "");
         if (seen.has(id)) continue;
@@ -293,7 +332,7 @@ app.post("/api/discover", async (req, res) => {
           maps: p.googleMapsUri || "",
         });
       }
-      if (out.length >= want * 3) break;   // AI選別の余地を持って多めに収集
+      if (out.length >= collectTarget) break;   // AI選別の余地を持って多めに収集
     }
 
     // ③ AIで二次選別(営業会社/販売代理店だけ残す)
